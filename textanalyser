@@ -1,0 +1,225 @@
+#!/usr/bin/env perl
+
+use strict;
+use CGI;
+use JSON;
+use Scalar::Util qw(looks_like_number);
+
+my $query = new CGI;
+
+my $id=get_id();
+if($ENV{'REQUEST_METHOD'} eq 'POST') {
+    my $dummy = {id => $id};
+    print "Content-type: text/plain\n\n";
+    print JSON->new->pretty(1)->encode($dummy);
+}
+
+if ($ENV{'REQUEST_METHOD'} ne 'GET' && $ENV{'REQUEST_METHOD' ne 'POST'}) {
+    print "Content-type: text/plain\n\n";
+    print $ENV{'REQUEST_METHOD'}." not allowed";
+    exit(0);
+}
+
+##############################
+use DBI;
+my $driver = 'Pg';
+my $database = 'message';
+my $host = 'mydbinstance.c2fut6zgm9sx.us-west-2.rds.amazonaws.com';
+my $dsn = "DBI:$driver:dbname=$database;host=$host;port=5432";
+my $userid = '';
+my $password = '';
+my $dbh = DBI->connect($dsn, $userid, $password, {AutoCommit => 0, RaiseError => 1 }) or die $DBI::errstr;
+$dbh->trace(1,'tracelog');
+###############################
+
+if($ENV{'REQUEST_METHOD'} eq 'GET') {
+    unless ($query->param('id')) {
+        usage();
+    }
+    my $search_id = $query->param('id');
+    unless(looks_like_number($search_id) && $search_id == abs($search_id)) {
+        print "Content-type: text/plain\n\n";
+        print "Incorrect Usage!\n";        
+        print "id should be positive integer\n";
+        print STDERR "search id passed not a number $search_id";
+        die "id passed was not a number $search_id";
+    }
+    my $q = qq(SELECT * FROM mesg WHERE data::jsonb @> '{"$search_id" : {"id":"$search_id"}}');
+    my $out = $dbh->selectall_arrayref($q);
+    my $v =  JSON->new->pretty->encode((JSON->new->decode($out->[0]->[0]))->{$search_id});
+    print "Content-type: text/plain\n\n";    
+    print $v;
+    $dbh->disconnect;
+    exit(1);
+}
+
+my $payload;
+my $msg_hash={};
+$payload = decode_json ($query->param('POSTDATA'));
+$msg_hash->{$id}->{'id'}= $id;
+$msg_hash->{$id}->{'text'}= $payload->{'text'};
+$msg_hash->{$id}->{'start_time'}= localtime();
+$msg_hash->{$id}->{'status'}= 'in progress'; 
+$msg_hash->{$id}->{'task_completed'}= 1; 
+
+
+#######Insert message details initially#########
+my $insert = "INSERT INTO mesg (data) VALUES (?)";
+my $sth = $dbh->prepare($insert);
+$sth->execute(JSON->new->encode($msg_hash));
+$dbh->commit();
+#################################################
+
+my @positive_words = qw(happy like amazing good love agree wonderful true enjoyable great incredible awesome); 
+my @negative_words = qw(cry hate fuck kill die disgusting awful terrible horrible);
+
+
+my $msg = $payload->{'text'}; 
+
+
+my $process_num=2;
+use Parallel::ForkManager;
+my $pm = Parallel::ForkManager->new($process_num);
+
+my $update = qq(UPDATE mesg SET data = ? WHERE data::jsonb @> '{"$id": {"id":"$id"}}');
+$pm->run_on_finish( sub {
+    my ($pid, $exit_code, $ident, $exit_signal, $core_dump, $res) = @_;
+       
+    if( $res->{'task_id'} == 1){
+        $msg_hash->{$id}->{'vowel_freq'} = $res->{'result'};
+        $msg_hash->{$id}->{'task_completed'}++;
+        my $dbh_child = $dbh->clone();
+        $dbh->{InactiveDestroy} = 1;
+        $dbh = $dbh_child;
+        $sth= $dbh->prepare($update);
+        $sth->execute(JSON->new->encode($msg_hash));
+        $dbh->commit;
+    } else {
+      
+    	$msg_hash->{$id}->{'word_freq'} = $res->{'result'}->{'word_freq'};
+    	$msg_hash->{$id}->{'sentiment'} = $res->{'result'}->{'sentiment'};
+    	$msg_hash->{$id}->{'task_completed'}+=2;
+        my $dbh_child = $dbh->clone();
+        $dbh->{InactiveDestroy} = 1;
+        $dbh = $dbh_child;
+        $sth= $dbh->prepare($update);
+        $sth->execute(JSON->new->encode($msg_hash));
+        $dbh->commit;
+    }
+});
+
+
+my $task_id;
+for (1..$process_num) {
+
+	$task_id= $_;
+    my $pid = $pm->start and next;
+    my $res;
+    if ($task_id == 1) {
+    	$res = get_vowel_freq($msg);
+    }
+    else {
+    	$res = task_3_4($msg);
+    } 
+    $pm->finish(0, { result => $res, task_id =>$task_id });
+}
+    $pm->wait_all_children;
+
+
+$msg_hash->{$id}->{'end_time'} = localtime();
+$msg_hash->{$id}->{'status'} = 'completed';
+
+$sth= $dbh->prepare($update);
+$sth->execute(JSON->new->encode($msg_hash));
+$dbh->commit;
+
+$dbh->disconnect;
+
+#print JSON->new->pretty(1)->encode ($msg_hash);
+sub get_vowel_freq {
+	my $message = shift;
+	my @alphabets = split "",$message;
+	my $vowels = {
+		'a' => 0,
+		'e' => 0,
+		'i' => 0,
+		'o' => 0,
+		'u' => 0
+	};
+	foreach (@alphabets) {
+		if (exists $vowels->{$_}) {
+			$vowels->{$_}++;
+		}
+	}
+	return $vowels;
+}
+
+sub get_words {
+	my $message = shift;
+	my @words = split " ", $message;
+        #remove punctuations . ,
+        foreach (@words) {
+        $_ =~ s/\.|\,//g;
+        }
+	return \@words;
+}
+
+sub task_3_4 {
+	my $res;
+	my $message = shift;
+	my $word_list = get_words($message);
+	my $word_freq;
+	foreach (@$word_list) {
+		$word_freq->{$_}++;
+	} 
+	$res->{'word_freq'} = $word_freq;
+	my $count = 0;
+	foreach my $key (keys %$word_freq) {
+		my $already_seen = 0;
+		foreach my $word (@positive_words) {
+			if ($key eq $word) {
+				$count = $count + 2*($word_freq->{$key});
+				$already_seen = 1;
+				last;
+			}
+		}
+		next if ($already_seen);
+		foreach my $word (@negative_words) {
+		 	if ($key eq $word) {
+		 		$count = $count - 2*($word_freq->{$key});
+		 		last;
+		 	}
+		 }
+	}
+        print STDERR "count for calculating sentiment:$count";
+	my $senti;
+	if ($count > 2) {
+		$senti = 'positive';
+	} elsif ($count <-2) {
+		$senti = 'negative';
+	} else {
+		$senti ='neutral';
+	}
+	$res->{'sentiment'} = $senti;
+	return $res;	
+}
+sub usage {
+    my $msg = shift;
+    print "Content-type: text/plain\n\n";
+    print "Incorrect Usage!\n";
+    print "Usage:Search message details with id=1020\n";
+    print "$ENV{'SERVER_NAME'}$ENV{'SCRIPT_NAME'}?id=1020";
+    die "incorrect usage";
+}
+
+sub get_id {
+    my $id_file = '/var/www/cgi-bin/id';
+    open(my $fh, "<$id_file") or die "Could not open file $id_file $!";
+    my $data = <$fh>;
+    $data++;
+    close $fh;
+    open (my $fhw, ">$id_file") or die "Could not open file $id_file $!";
+    print $fhw $data;
+    close $fhw;
+    return $data;
+}
