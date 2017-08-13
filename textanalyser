@@ -4,7 +4,9 @@ use strict;
 use CGI;
 use JSON;
 use Scalar::Util qw(looks_like_number);
+use YAML;
 
+my $config = YAML::LoadFile("config.yml");
 my $query = new CGI;
 
 my $id=get_id();
@@ -22,12 +24,12 @@ if ($ENV{'REQUEST_METHOD'} ne 'GET' && $ENV{'REQUEST_METHOD' ne 'POST'}) {
 
 ##############################
 use DBI;
-my $driver = 'Pg';
-my $database = 'message';
-my $host = 'mydbinstance.c2fut6zgm9sx.us-west-2.rds.amazonaws.com';
+my $driver = $config->{db}->{driver};
+my $database = $config->{db}->{database};
+my $host = $config->{db}->{host};
 my $dsn = "DBI:$driver:dbname=$database;host=$host;port=5432";
-my $userid = '';
-my $password = '';
+my $userid = $config->{db}->{userid};
+my $password = $config->{db}->{passwd};
 my $dbh = DBI->connect($dsn, $userid, $password, {AutoCommit => 0, RaiseError => 1 }) or die $DBI::errstr;
 $dbh->trace(1,'tracelog');
 ###############################
@@ -71,7 +73,7 @@ $dbh->commit();
 #################################################
 
 my @positive_words = qw(happy like amazing good love agree wonderful true enjoyable great incredible awesome); 
-my @negative_words = qw(cry hate fuck kill die disgusting awful terrible horrible);
+my @negative_words = qw(cry hate kill die disgusting awful terrible horrible);
 
 
 my $msg = $payload->{'text'}; 
@@ -213,7 +215,7 @@ sub usage {
 }
 
 sub get_id {
-    my $id_file = '/var/www/cgi-bin/id';
+    my $id_file ='./id';
     open(my $fh, "<$id_file") or die "Could not open file $id_file $!";
     my $data = <$fh>;
     $data++;
