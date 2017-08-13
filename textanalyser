@@ -9,8 +9,9 @@ use YAML;
 my $config = YAML::LoadFile("config.yml");
 my $query = new CGI;
 
-my $id=get_id();
+my $id;
 if($ENV{'REQUEST_METHOD'} eq 'POST') {
+    $id = get_id();
     my $dummy = {id => $id};
     print "Content-type: text/plain\n\n";
     print JSON->new->pretty(1)->encode($dummy);
@@ -31,9 +32,8 @@ my $dsn = "DBI:$driver:dbname=$database;host=$host;port=5432";
 my $userid = $config->{db}->{userid};
 my $password = $config->{db}->{passwd};
 my $dbh = DBI->connect($dsn, $userid, $password, {AutoCommit => 0, RaiseError => 1 }) or die $DBI::errstr;
-$dbh->trace(1,'tracelog');
+$dbh->trace(1,'/tmp/db_tracelog');
 ###############################
-
 if($ENV{'REQUEST_METHOD'} eq 'GET') {
     unless ($query->param('id')) {
         usage();
@@ -63,7 +63,6 @@ $msg_hash->{$id}->{'text'}= $payload->{'text'};
 $msg_hash->{$id}->{'start_time'}= localtime();
 $msg_hash->{$id}->{'status'}= 'in progress'; 
 $msg_hash->{$id}->{'task_completed'}= 1; 
-
 
 #######Insert message details initially#########
 my $insert = "INSERT INTO mesg (data) VALUES (?)";
